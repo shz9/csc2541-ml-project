@@ -2,20 +2,13 @@ import numpy as np
 from matplotlib import pyplot as plt
 
 
-def gp_plot(x, y, gp_mean=None, mean_color="b", var_color="b", point_color="black"):
+def gp_plot(plot_path, x, y, gp_mean=None, mean_color="b", var_color="b", point_color="black"):
     """
     This function was borrowed from the GPflow tutorial. Modified by Shadi Zabad.
     http://gpflow.readthedocs.io/en/latest/notebooks/regression.html
-    :param x:
-    :param y:
-    :param gp_mean:
-    :param mean_color:
-    :param var_color:
-    :param point_color:
-    :return:
     """
 
-    plt.figure(figsize=(12, 6))
+    fig = plt.figure(figsize=(12, 6))
 
     if x is not None and y is not None:
         plt.plot(x, y, 'kx', color=point_color, mew=2)
@@ -27,5 +20,5 @@ def gp_plot(x, y, gp_mean=None, mean_color="b", var_color="b", point_color="blac
                          gp_mean["Y"][:, 0] + 2*np.sqrt(gp_mean["Var"][:, 0]),
                          color=var_color, alpha=0.2)
 
-    plt.show()
+    fig.savefig(plot_path)
 

@@ -1,4 +1,5 @@
 """
+Modified by Shadi Zabad
 The functions below are borrowed from the GPflow documentation.
 http://gpflow.readthedocs.io/en/latest/notebooks/kernels.html
 """
@@ -50,4 +51,4 @@ def plot_kernels(kernel_list, nrows=2, ncols=4):
 
         break
 
-    plt.show()
+    f.savefig("../_images/kernel_samples.png")

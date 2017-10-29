@@ -11,8 +11,8 @@ class RationalQuadratic(gpflow.kernels.Stationary):
     https://github.com/GPflow/GPflow/issues/526#issuecomment-338256036
 
     """
-    def __init__(self, alpha=1.0, lengthscales=1.0):
-        gpflow.kernels.Stationary.__init__(self, input_dim=1, active_dims=[0])
+    def __init__(self, input_dim=1, active_dims=[0], alpha=1.0, lengthscales=1.0):
+        gpflow.kernels.Stationary.__init__(self, input_dim=input_dim, active_dims=active_dims)
         self.alpha = gpflow.param.Param(alpha, transform=gpflow.transforms.positive)
         self.lengthscales = lengthscales
 
