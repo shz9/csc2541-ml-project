@@ -22,3 +22,19 @@ def mauna_loa_kernel():
          gpflow.kernels.White(1, variance=0.19**2)
 
     return k1 + k2 + k3 + k4
+
+
+def spectral_mixture():
+    """
+    Based on this implementation by James Hensman:
+    https://github.com/GPflow/GPflow/issues/312#issuecomment-272425105
+
+    NOTE: This doesn't work! It's not capturing the seasonal periodic component.
+    """
+
+    return (gpflow.kernels.Constant(1) * gpflow.kernels.RBF(1) *
+            gpflow.kernels.Cosine(1)) + \
+           (gpflow.kernels.Constant(1) * gpflow.kernels.RBF(1) *
+            gpflow.kernels.Cosine(1)) + \
+           (gpflow.kernels.Constant(1) * gpflow.kernels.RBF(1) *
+            gpflow.kernels.Cosine(1))

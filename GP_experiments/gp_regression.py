@@ -21,11 +21,13 @@ X_train = np.array(train_data['Time']).reshape((len(train_data), 1))
 Y_train = np.array(train_data['CO2Concentration']).reshape((len(train_data), 1))
 
 # Use custom kernel to model the data:
-custom_kernel = mauna_loa_kernel()
+custom_kernel = spectral_mixture()
 m = gpflow.gpr.GPR(X_train, Y_train, kern=custom_kernel)
 
 # Fit GPR to the training data
 m.optimize()
+
+print m
 
 # Create 5000 X points from start to end of the dataset.
 xx = np.linspace(min(df["Time"]), max(df["Time"]), 5000)[:, None]
