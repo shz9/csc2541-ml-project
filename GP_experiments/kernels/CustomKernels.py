@@ -15,7 +15,7 @@ def mauna_loa_kernel():
         * gpflow.kernels.PeriodicKernel(1, lengthscales=1.3, period=1.0)
 
     # Medium term irregularity:
-    k3 = gpflow.kernels.Constant(1, 0.66**2) * RationalQuadratic(lengthscales=1.2, alpha=0.78)
+    k3 = gpflow.kernels.Constant(1, 0.66**2) * RationalQuadratic(1, lengthscales=1.2, alpha=0.78)
 
     # Noise terms:
     k4 = gpflow.kernels.Constant(1, 0.18**2) * gpflow.kernels.RBF(1, lengthscales=0.134) + \
