@@ -21,7 +21,7 @@ X_train = np.array(train_data['Time']).reshape((len(train_data), 1))
 Y_train = np.array(train_data['CO2Concentration']).reshape((len(train_data), 1))
 
 # Use custom kernel to model the data:
-custom_kernel = spectral_mixture()
+custom_kernel = mauna_loa_kernel()
 m = gpflow.gpr.GPR(X_train, Y_train, kern=custom_kernel)
 
 # Fit GPR to the training data
