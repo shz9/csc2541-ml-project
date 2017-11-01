@@ -37,6 +37,9 @@ def parser(x):
 	return datetime.strptime(x, '%Y-%m')
  
 # frame a sequence as a supervised learning problem
+# original data series = [co2_1, co2_2, co2_3...]
+# after transform = [(0, co2_1), (co2_1, co2_2), (co2_2, co2_3)...]
+# this is done as LSTM takes input in (x,y) format 
 def timeseries_to_supervised(data, lag=1):
 	df = DataFrame(data)
 	columns = [df.shift(i) for i in range(1, lag+1)]
@@ -45,7 +48,9 @@ def timeseries_to_supervised(data, lag=1):
 	df.fillna(0, inplace=True)
 	return df
  
-# create a differenced series
+# transform the original series to a series of differences
+# original data series = [co2_1, co2_2, co2_3...]
+# after transform = [ co2-co21, co2_3-co2_2, ...]
 def difference(dataset, interval=1):
 	diff = list()
 	for i in range(interval, len(dataset)):
@@ -53,7 +58,7 @@ def difference(dataset, interval=1):
 		diff.append(value)
 	return Series(diff)
  
-# invert differenced value
+# invert the difference transformation
 def inverse_difference(history, yhat, interval=1):
 	return yhat + history[-interval]
  
@@ -81,6 +86,7 @@ def invert_scale(scaler, X, value):
 # fit an LSTM network to training data
 def fit_lstm(train, batch_size, nb_epoch, neurons):
 	X, y = train[:, 0:-1], train[:, -1]
+	# reshaping because the LSTM module expects input in this format
 	X = X.reshape(X.shape[0], 1, X.shape[1])
 	model = Sequential()
 	model.add(LSTM(neurons, batch_input_shape=(batch_size, X.shape[1], X.shape[2]), stateful=True))
@@ -88,6 +94,7 @@ def fit_lstm(train, batch_size, nb_epoch, neurons):
 	model.compile(loss='mean_squared_error', optimizer='adam')
 	for i in range(nb_epoch):
 		model.fit(X, y, epochs=1, batch_size=batch_size, verbose=0, shuffle=False)
+		# we have made the model stateful so we control when the state is reset
 		model.reset_states()
 		print("Training Epoch", i, "done...")
 	return model
