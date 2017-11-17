@@ -8,7 +8,7 @@ from kernels.CustomKernels import *
 # http://scikit-learn.org/stable/auto_examples/gaussian_process/plot_gpr_co2.html#sphx-glr-auto-examples-gaussian-process-plot-gpr-co2-py
 
 # Load the Mauna Loa CO2 dataset and label the columns
-df = pd.read_csv('../_data/mauna-loa-atmospheric-co2.csv', sep=',', header=None)
+df = pd.read_csv('../data/mauna-loa-atmospheric-co2.csv', sep=',', header=None)
 df.columns = ['CO2Concentration', 'Time']
 
 # Extract the X and Y components

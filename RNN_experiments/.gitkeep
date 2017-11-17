@@ -1,4 +1,0 @@
-Comments 'simple_keras_lstm.py:
-  1. Does very well by training only on 50% of the data
-  2. Two changes were made to data before training: feed difference of two readings as input, scale the values to [-1,1] as LSTM uses tanh() which generates output in [-1,1]
-  3. Next steps: train with different architectures, observe how they perform in comparison to each other, possibly we can come up with some changes to the architecture or the algorithms involved.
