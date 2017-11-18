@@ -9,36 +9,26 @@ def print_grid_results(grid_result):
         print("%f (%f) with: %r" % (mean, stdev, param))
 
 
-def evaluate_model_sliding_stateful(model, x, y, args):
-    cur_window = x[0]
+def predict_sliding(model, x_train, test_len, args, full=True):
+    model.reset_states()
+
+    train_pred = model.predict(x_train, batch_size=args.batch_size)
+    cur_window = train_pred[-args.seq_len:]
     pred = []
 
-    for i in range(int(x.shape[0] * args.train_percent)):
-        pred.append(model.predict(np.expand_dims(cur_window, axis=0))[0,0])
-        cur_window = x[i]
-
-    for i in range(int(x.shape[0] * args.train_percent), x.shape[0]):
+    for i in range(test_len):
         pred.append(model.predict(np.expand_dims(cur_window, axis=0))[0,0])
         cur_window = cur_window[1:]
         cur_window = np.concatenate((cur_window, np.array([[pred[i]]])))
 
     pred = np.array(pred)
 
-    return pred
+    if full:
+        result = np.concatenate((train_pred.reshape(-1), pred))
+    else:
+        result = pred
 
-
-def evaluate_model_sliding_stateless(model, x, y):
-    cur_window = x[0]
-    pred = []
-
-    for i in range(x.shape[0]):
-        pred.append(model.predict(np.expand_dims(cur_window, axis=0))[0,0])
-        cur_window = cur_window[1:]
-        cur_window = np.concatenate((cur_window, np.array([[pred[i]]])))
-
-    pred = np.array(pred)
-
-    return pred
+    return result
 
 
 def evaluate_model_static(model, x, y, args):

@@ -65,4 +65,3 @@ def generate_data_many_to_one(samples, seq_len, fun=np.sin):
     y_test = np.array(y_test)
 
     return x_train, y_train, x_test, y_test
-
