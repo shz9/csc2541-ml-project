@@ -10,7 +10,7 @@ from sklearn.gaussian_process import GaussianProcessRegressor
 import numpy as np
 
 
-def bootstrap_data(X, Y, kernel, samples=50):
+def bootstrap_data(X, Y, kernel, n_samples=50):
     """
 
     :param X:
@@ -28,7 +28,7 @@ def bootstrap_data(X, Y, kernel, samples=50):
     boot_samples = []
     num_records = len(X)
 
-    for si in range(samples):
+    for si in range(n_samples):
         # - Start of the sequence is a normal distribution centered on X[0]
         # and with standard deviation equal to 5% the value of X[0].
         # - Same logic applies to the end of the sequence.

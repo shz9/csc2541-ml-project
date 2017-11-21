@@ -7,8 +7,11 @@ from keras.models import load_model, save_model
 from matplotlib import pyplot as plt
 import numpy as np
 import glob
+import os
 from joblib import Parallel, delayed
 from sklearn.gaussian_process.kernels import RBF, WhiteKernel, RationalQuadratic, ExpSineSquared
+from RNN_experiments.bootstrap.other_bootstrap import stationary_boostrap_method, \
+    moving_block_bootstrap_method, circular_block_bootstrap_method
 from RNN_experiments.bootstrap.gp_bootstrap import bootstrap_data
 
 
@@ -111,7 +114,7 @@ def make_model_predictions(model, train, all_y, init_val):
     return predictions
 
 
-def main(retrain=True):
+def main(retrain=True, bootstrap_method='gp', n_rnns=10):
 
     # load dataset
     ex_dataset = pd.read_csv('../../data/mauna-loa-atmospheric-co2.csv',
@@ -121,17 +124,35 @@ def main(retrain=True):
     train_data = ex_dataset.loc[ex_dataset.Time <= 1980, ['CO2Concentration', 'Time']]
 
     if retrain:
-        bootstrapped_dataset = bootstrap_data(train_data['Time'].reshape(-1, 1),
-                                              train_data['CO2Concentration'].reshape(-1, 1),
-                                              34.4**2 * RBF(length_scale=41.8) +
-                                              3.27**2 * RBF(length_scale=180) * ExpSineSquared(length_scale=1.44,
-                                                                                               periodicity=1) +
-                                              0.446**2 * RationalQuadratic(alpha=17.7, length_scale=0.957) +
-                                              0.197**2 * RBF(length_scale=0.138) + WhiteKernel(noise_level=0.0336),
-                                              samples=10)
-        # Need to run this in parallel:
 
-        # t_pool = ThreadPool(20)
+        # Delete old models:
+        for mod_path in glob.glob("./models/*.kmodel"):
+            os.remove(mod_path)
+
+        if bootstrap_method == 'gp':
+            bootstrapped_dataset = bootstrap_data(train_data['Time'].reshape(-1, 1),
+                                                  train_data['CO2Concentration'].reshape(-1, 1),
+                                                  34.4**2 * RBF(length_scale=41.8) +
+                                                  3.27**2 * RBF(length_scale=180) * ExpSineSquared(length_scale=1.44,
+                                                                                                   periodicity=1) +
+                                                  0.446**2 * RationalQuadratic(alpha=17.7, length_scale=0.957) +
+                                                  0.197**2 * RBF(length_scale=0.138) + WhiteKernel(noise_level=0.0336),
+                                                  n_samples=n_rnns)
+        elif bootstrap_method == 'stationary_block':
+            bootstrapped_dataset = stationary_boostrap_method(train_data['Time'],
+                                                              train_data['CO2Concentration'],
+                                                              n_samples=n_rnns)
+        elif bootstrap_method == 'moving_block':
+            bootstrapped_dataset = moving_block_bootstrap_method(train_data['Time'],
+                                                                 train_data['CO2Concentration'],
+                                                                 n_samples=n_rnns)
+        elif bootstrap_method == 'circular_block':
+            bootstrapped_dataset = circular_block_bootstrap_method(train_data['Time'],
+                                                                   train_data['CO2Concentration'],
+                                                                   n_samples=n_rnns)
+        else:
+            raise Exception("Bootstrap method not implemented!")
+
         Parallel(n_jobs=10)(delayed(train_model)(pd.DataFrame({'Time': np.ravel(dat[0]),
                                                                'CO2Concentration': np.ravel(dat[1])}),
                                                  idx)
@@ -168,14 +189,18 @@ def main(retrain=True):
         rnn_conf = np.append(rnn_conf, np.std(step_vals))
 
     plt.plot(ex_dataset['CO2Concentration'][-228:])
+    for pred in preds:
+        plt.plot(pred, color="black", alpha=.3)
     plt.plot(rnn_means)
     plt.fill_between(list(range(len(rnn_means))),
                      rnn_means - rnn_conf,
                      rnn_means + rnn_conf,
                      color="gray", alpha=0.2)
 
-    plt.show()
+    plt.title("Bootstrap Method: " + bootstrap_method + " / Number of RNNs: " + str(n_rnns))
+
+    plt.savefig("./figures/" + bootstrap_method + ".png")
 
 
 if __name__ == "__main__":
-    main(False)
+    main(retrain=True, bootstrap_method='circular_block')
