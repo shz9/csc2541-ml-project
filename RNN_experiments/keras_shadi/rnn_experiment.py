@@ -1,20 +1,18 @@
+import glob
+import pickle
+import numpy as np
+import os
 import pandas as pd
-from sklearn.preprocessing import MinMaxScaler
-from keras.models import Sequential
 from keras.layers import Dense
 from keras.layers import LSTM
+from keras.models import Sequential
 from keras.models import load_model, save_model
 from matplotlib import pyplot as plt
-import numpy as np
-from scipy import stats
-import glob
-import os
-import pickle
-from joblib import Parallel, delayed
-from sklearn.gaussian_process.kernels import RBF, WhiteKernel, RationalQuadratic, ExpSineSquared
-from RNN_experiments.bootstrap.other_bootstrap import stationary_boostrap_method, \
+from sklearn.externals.joblib import Parallel, delayed
+from sklearn.preprocessing import MinMaxScaler
+from RNN_experiments.keras_shadi.bootstrap.other_bootstrap import stationary_boostrap_method, \
     moving_block_bootstrap_method, circular_block_bootstrap_method
-from RNN_experiments.bootstrap.gp_bootstrap import bootstrap_data
+from joblib import Parallel, delayed
 
 
 # frame a sequence as a supervised learning problem
@@ -57,11 +55,11 @@ def fit_lstm(train, batch_size, nb_epoch, neurons):
     model = Sequential()
     model.add(LSTM(neurons, batch_input_shape=(batch_size, X.shape[1], X.shape[2]), stateful=True))
     model.add(Dense(1))
-    model.compile(loss='mean_squared_error', optimizer='adam', metrics=['accuracy'])
+    model.compile(loss='mean_squared_error', optimizer='adam')
     training_acc = None
     for i in range(nb_epoch):
         train_res = model.fit(X, y, epochs=1, batch_size=batch_size, verbose=0, shuffle=False)
-        training_acc = train_res.history['acc']
+        training_acc = train_res.history['loss']
         model.reset_states()
     return model, training_acc
 
@@ -79,9 +77,10 @@ def train_model(ith_dataset, idx):
     # transform data to be supervised learning
     supervised = timeseries_to_supervised(diff_values, 1)
 
-    lstm_model, train_acc = fit_lstm(supervised.values, 1, 50, 4)
+    lstm_model, loss = fit_lstm(supervised.values, 1, 100, 50)
 
-    print idx, train_acc
+    with open("./model_performance/" + str(idx) + ".pkl", "wb") as lf:
+        pickle.dump(loss[0], lf)
 
     save_model(lstm_model, "./models/" + str(idx) + ".kmodel")
 
@@ -121,7 +120,7 @@ def make_model_predictions(train, all_y, init_val, idx):
         pickle.dump(predictions, pf)
 
 
-def main(retrain=True, bootstrap_method='gp', n_rnns=10, plot_preds=True):
+def main(retrain=True, bootstrap_method='gp', n_rnns=10, plot_preds=True, filter_bad_models=True):
 
     # load dataset
     ex_dataset = pd.read_csv('../../data/mauna-loa-atmospheric-co2.csv',
@@ -136,15 +135,24 @@ def main(retrain=True, bootstrap_method='gp', n_rnns=10, plot_preds=True):
         for mod_path in glob.glob("./models/*.kmodel"):
             os.remove(mod_path)
 
+        for mod_path in glob.glob("./model_performance/*.pkl"):
+            os.remove(mod_path)
+
         if bootstrap_method == 'gp':
-            bootstrapped_dataset = bootstrap_data(train_data['Time'].reshape(-1, 1),
-                                                  train_data['CO2Concentration'].reshape(-1, 1),
-                                                  34.4**2 * RBF(length_scale=41.8) +
-                                                  3.27**2 * RBF(length_scale=180) * ExpSineSquared(length_scale=1.44,
-                                                                                                   periodicity=1) +
-                                                  0.446**2 * RationalQuadratic(alpha=17.7, length_scale=0.957) +
-                                                  0.197**2 * RBF(length_scale=0.138) + WhiteKernel(noise_level=0.0336),
-                                                  n_samples=n_rnns)
+
+            # Due to issues with multiprocessing in sklearn not terminating
+            # and training jobs for RNNs not starting as a results,
+            # I had to generate GP samples in a separate script.
+            # Will find a way to fix this issue later on.
+            bootstrapped_dataset = []
+
+            for gpf in glob.glob("./bootstrap/gp_samples/*.pkl"):
+                with open(gpf, "rb") as gpfp:
+                    bootstrapped_dataset.append(pickle.load(gpfp))
+
+                if len(bootstrapped_dataset) == n_rnns:
+                    break
+
         elif bootstrap_method == 'stationary_block':
             bootstrapped_dataset = stationary_boostrap_method(train_data['Time'],
                                                               train_data['CO2Concentration'],
@@ -160,15 +168,12 @@ def main(retrain=True, bootstrap_method='gp', n_rnns=10, plot_preds=True):
         else:
             raise Exception("Bootstrap method not implemented!")
 
-        Parallel(n_jobs=10, verbose=5)(delayed(train_model)(pd.DataFrame({'Time': np.ravel(dat[0]),
+        print "Training ensemble..."
+        Parallel(n_jobs=10, verbose=10)(delayed(train_model)(pd.DataFrame({'Time': np.ravel(dat[0]),
                                                                           'CO2Concentration': np.ravel(dat[1])}),
-                                                            idx)
-                                       for idx, dat in enumerate(bootstrapped_dataset))
-
-    """for x, y in bootstrapped_dataset:
-        temp_df = pd.DataFrame({'Time': np.ravel(x),
-                                'CO2Concentration': np.ravel(y)})
-        rnn_models.append(train_model(temp_df))"""
+                                                             idx)
+                                        for idx, dat in enumerate(bootstrapped_dataset))
+        print "Done training ensemble!"
 
     for pred_path in glob.glob("./predictions/*.pkl"):
         os.remove(pred_path)
@@ -181,17 +186,36 @@ def main(retrain=True, bootstrap_method='gp', n_rnns=10, plot_preds=True):
     # split data into train and test-sets
     train, test = supervised_values[0:-228], supervised_values[-228:]
 
-    Parallel(n_jobs=20, verbose=5)(delayed(make_model_predictions)(train,
-                                                                   test,
-                                                                   ex_dataset['CO2Concentration'][len(test)+1],
-                                                                   idx)
-                                   for idx in range(n_rnns))
+    mod_pf = {}
+    for modpf in glob.glob("./model_performance/*.pkl"):
+        with open(modpf, "rb") as modof:
+            mod_pf[int(os.path.basename(modpf).replace(".pkl", ""))] = pickle.load(modof)
+
+    best_models = []
+
+    for midx in mod_pf.keys():
+        if np.sqrt(mod_pf[midx]) < .15:
+            print np.sqrt(mod_pf[midx])
+            best_models.append(midx)
+        elif not filter_bad_models:
+            best_models.append(midx)
+
+    if len(best_models) < 1:
+        raise Exception("None of the models achieved the minimum threshold for the MSE metric.")
+
+    Parallel(n_jobs=20, verbose=10)(delayed(make_model_predictions)(train,
+                                                                    supervised_values, # test,
+                                                                    ex_dataset['CO2Concentration'][0], # ex_dataset['CO2Concentration'][len(test)+1],
+                                                                    idx)
+                                    for idx in best_models)
 
     preds = []
 
     for predf in glob.glob("./predictions/*.pkl"):
         with open(predf, "rb") as pf:
             preds.append(pickle.load(pf))
+
+    print len(preds)
 
     #for mod in rnn_models:
     #    preds.append(make_model_predictions(mod, train, test, ex_dataset['CO2Concentration'][len(test)+1]))
@@ -202,39 +226,29 @@ def main(retrain=True, bootstrap_method='gp', n_rnns=10, plot_preds=True):
 
     for k in range(len(preds[0])):
         step_vals = [el[k] for el in preds]
-        # rnn_means = np.append(rnn_means, np.mean(step_vals))
-        rnn_means = np.append(rnn_means, stats.trim_mean(step_vals, 0.3))
+        rnn_means = np.append(rnn_means, np.mean(step_vals))
+        #rnn_means = np.append(rnn_means, stats.trim_mean(step_vals, 0.3))
         rnn_conf = np.append(rnn_conf, np.std(step_vals))
 
-    plt.plot(ex_dataset['CO2Concentration'][-228:])
+    #plt.plot(ex_dataset['CO2Concentration'][-228:])
+    plt.plot(ex_dataset['CO2Concentration'], color="blue")
     if plot_preds:
         for pred in preds:
-            plt.plot(pred, color="black", alpha=.1)
-    plt.plot(rnn_means)
+            plt.plot(pred, color="green", alpha=.1)
+    plt.plot(rnn_means, color="red")
     plt.fill_between(list(range(len(rnn_means))),
                      rnn_means - rnn_conf,
                      rnn_means + rnn_conf,
                      color="gray", alpha=0.2)
 
-    plt.title("Bootstrap Method: " + bootstrap_method + " / Number of RNNs: " + str(n_rnns))
+    plt.axvline(len(train_data), color="purple", linestyle='--')
 
-    plt.savefig("./figures/" + bootstrap_method + "_" + str(n_rnns) +
-                "_samples_" + ["no_preds", "preds"][plot_preds] + ".png")
+    plt.title("Bootstrap Method: " + bootstrap_method + " / Number of RNNs: " + str(len(best_models)))
+
+    plt.savefig("./figures/" + bootstrap_method + "_trained" + str(n_rnns) + "_selected" + str(len(best_models)) +
+                "_" + ["no_preds", "preds"][plot_preds] + ".png")
 
 
 if __name__ == "__main__":
-    main(retrain=False, bootstrap_method='moving_block', n_rnns=10, plot_preds=False)
-
-
-"""
-7 [0.015810276679841896]
-4 [0.003952569169960474]
-2 [0.015810276679841896]
-1 [0.02766798418972332]
-0 [0.011857707509881422]
-3 [0.019762845849802372]
-6 [0.003952569169960474]
-8 [0.011857707509881422]
-5 [0.0079051383399209481]
-9 [0.0]
-"""
+    main(retrain=True, bootstrap_method='gp',
+         n_rnns=100, plot_preds=True, filter_bad_models=True)

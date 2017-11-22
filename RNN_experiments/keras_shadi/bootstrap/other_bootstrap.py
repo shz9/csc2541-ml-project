@@ -14,7 +14,7 @@ def stationary_boostrap_method(X, Y, block_size=30, n_samples=50):
     return boot_samples
 
 
-def moving_block_bootstrap_method(X, Y, block_size=100, n_samples=50):
+def moving_block_bootstrap_method(X, Y, block_size=150, n_samples=50):
 
     boot_samples = []
     bs = MovingBlockBootstrap(block_size, X, y=Y)
