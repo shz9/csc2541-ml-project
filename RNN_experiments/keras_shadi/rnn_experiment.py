@@ -10,6 +10,7 @@ from keras.models import load_model, save_model
 from matplotlib import pyplot as plt
 from sklearn.externals.joblib import Parallel, delayed
 from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics import mean_squared_error
 from RNN_experiments.keras_shadi.bootstrap.other_bootstrap import stationary_boostrap_method, \
     moving_block_bootstrap_method, circular_block_bootstrap_method
 from joblib import Parallel, delayed
@@ -56,12 +57,11 @@ def fit_lstm(train, batch_size, nb_epoch, neurons):
     model.add(LSTM(neurons, batch_input_shape=(batch_size, X.shape[1], X.shape[2]), stateful=True))
     model.add(Dense(1))
     model.compile(loss='mean_squared_error', optimizer='adam')
-    training_acc = None
+
     for i in range(nb_epoch):
-        train_res = model.fit(X, y, epochs=1, batch_size=batch_size, verbose=0, shuffle=False)
-        training_acc = train_res.history['loss']
+        model.fit(X, y, epochs=1, batch_size=batch_size, verbose=0, shuffle=False)
         model.reset_states()
-    return model, training_acc
+    return model
 
 
 # make a one-step forecast
@@ -77,10 +77,14 @@ def train_model(ith_dataset, idx):
     # transform data to be supervised learning
     supervised = timeseries_to_supervised(diff_values, 1)
 
-    lstm_model, loss = fit_lstm(supervised.values, 1, 100, 50)
+    lstm_model = fit_lstm(supervised.values, 1, 100, 50)
+
+    y_train_pred = lstm_model.predict(supervised.values[:, 0].reshape(-1, 1, 1), batch_size=1)
+
+    mse = mean_squared_error(supervised.values[:, -1], y_train_pred)
 
     with open("./model_performance/" + str(idx) + ".pkl", "wb") as lf:
-        pickle.dump(loss[0], lf)
+        pickle.dump(mse, lf)
 
     save_model(lstm_model, "./models/" + str(idx) + ".kmodel")
 
@@ -169,7 +173,7 @@ def main(retrain=True, bootstrap_method='gp', n_rnns=10, plot_preds=True, filter
             raise Exception("Bootstrap method not implemented!")
 
         print "Training ensemble..."
-        Parallel(n_jobs=10, verbose=10)(delayed(train_model)(pd.DataFrame({'Time': np.ravel(dat[0]),
+        Parallel(n_jobs=20, verbose=10)(delayed(train_model)(pd.DataFrame({'Time': np.ravel(dat[0]),
                                                                           'CO2Concentration': np.ravel(dat[1])}),
                                                              idx)
                                         for idx, dat in enumerate(bootstrapped_dataset))
@@ -194,7 +198,7 @@ def main(retrain=True, bootstrap_method='gp', n_rnns=10, plot_preds=True, filter
     best_models = []
 
     for midx in mod_pf.keys():
-        if np.sqrt(mod_pf[midx]) < .15:
+        if np.sqrt(mod_pf[midx]) < .2:
             print np.sqrt(mod_pf[midx])
             best_models.append(midx)
         elif not filter_bad_models:

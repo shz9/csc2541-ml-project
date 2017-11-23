@@ -11,15 +11,16 @@ from sklearn.gaussian_process.kernels import RBF, WhiteKernel, RationalQuadratic
 import pandas as pd
 import pickle
 import os
+from matplotlib import pylab as plt
 import glob
 import numpy as np
 
 
-def bootstrap_data(X, Y, kernel, n_samples=50):
+def gp_bootstrap_shift(X, Y, kernel, n_samples=50):
 
     # First, we fit a GP model to the data:
 
-    m = GaussianProcessRegressor(kernel=kernel)
+    m = GaussianProcessRegressor(kernel=kernel, alpha=20)
     m.fit(X, Y)
 
     boot_samples = []
@@ -41,6 +42,24 @@ def bootstrap_data(X, Y, kernel, n_samples=50):
     return boot_samples
 
 
+def gp_bootstrap_noise(X, Y, kernel, n_samples=50):
+
+    # First, we fit a GP model to the data
+    # (with noise added, represented by the parameter alpha):
+
+    m = GaussianProcessRegressor(kernel=kernel, alpha=20)
+    m.fit(X, Y)
+
+    gp_samples = m.sample_y(X, n_samples=n_samples).T
+
+    boot_samples = []
+
+    for si in range(n_samples):
+        boot_samples.append((X, gp_samples[si][0]))
+
+    return boot_samples
+
+
 def generate_samples(n_samples):
 
     ex_dataset = pd.read_csv('../../../data/mauna-loa-atmospheric-co2.csv',
@@ -49,14 +68,14 @@ def generate_samples(n_samples):
 
     train_data = ex_dataset.loc[ex_dataset.Time <= 1980, ['CO2Concentration', 'Time']]
 
-    samps = bootstrap_data(train_data['Time'].reshape(-1, 1),
-                           train_data['CO2Concentration'].reshape(-1, 1),
-                           34.4 ** 2 * RBF(length_scale=41.8) +
-                           3.27 ** 2 * RBF(length_scale=180) * ExpSineSquared(length_scale=1.44,
-                                                                              periodicity=1) +
-                           0.446 ** 2 * RationalQuadratic(alpha=17.7, length_scale=0.957) +
-                           0.197 ** 2 * RBF(length_scale=0.138) + WhiteKernel(noise_level=0.0336),
-                           n_samples=n_samples)
+    samps = gp_bootstrap_noise(train_data['Time'].reshape(-1, 1),
+                               train_data['CO2Concentration'].reshape(-1, 1),
+                               34.4 ** 2 * RBF(length_scale=41.8) +
+                               3.27 ** 2 * RBF(length_scale=180) * ExpSineSquared(length_scale=1.44,
+                                                                                  periodicity=1) +
+                               0.446 ** 2 * RationalQuadratic(alpha=17.7, length_scale=0.957) +
+                               0.197 ** 2 * RBF(length_scale=0.138) + WhiteKernel(noise_level=0.0336),
+                               n_samples=n_samples)
 
     for osf in glob.glob("./gp_samples/*.pkl"):
         os.remove(osf)
