@@ -81,6 +81,8 @@ def train_model(ith_dataset, idx):
 
     y_train_pred = lstm_model.predict(supervised.values[:, 0].reshape(-1, 1, 1), batch_size=1)
 
+    lstm_model.reset_states()
+
     mse = mean_squared_error(supervised.values[:, -1], y_train_pred)
 
     with open("./model_performance/" + str(idx) + ".pkl", "wb") as lf:
@@ -93,9 +95,9 @@ def make_model_predictions(train, all_y, init_val, idx):
 
     model = load_model("./models/" + str(idx) + ".kmodel")
     # forecast the entire training dataset to build up state for forecasting
-    train_reshaped = train[:, 0].reshape(len(train), 1, 1)
+    # train_reshaped = train[:, 0].reshape(len(train), 1, 1)
 
-    model.predict(train_reshaped, batch_size=1)
+    # model.predict(train_reshaped, batch_size=1)
 
     # walk-forward validation on the test data
     predictions = []
@@ -198,7 +200,7 @@ def main(retrain=True, bootstrap_method='gp', n_rnns=10, plot_preds=True, filter
     best_models = []
 
     for midx in mod_pf.keys():
-        if np.sqrt(mod_pf[midx]) < .2:
+        if np.sqrt(mod_pf[midx]) < .07:
             print np.sqrt(mod_pf[midx])
             best_models.append(midx)
         elif not filter_bad_models:
@@ -208,7 +210,7 @@ def main(retrain=True, bootstrap_method='gp', n_rnns=10, plot_preds=True, filter
         raise Exception("None of the models achieved the minimum threshold for the MSE metric.")
 
     Parallel(n_jobs=20, verbose=10)(delayed(make_model_predictions)(train,
-                                                                    supervised_values, # test,
+                                                                    supervised_values,  # test,
                                                                     ex_dataset['CO2Concentration'][0], # ex_dataset['CO2Concentration'][len(test)+1],
                                                                     idx)
                                     for idx in best_models)
@@ -241,8 +243,8 @@ def main(retrain=True, bootstrap_method='gp', n_rnns=10, plot_preds=True, filter
             plt.plot(pred, color="green", alpha=.1)
     plt.plot(rnn_means, color="red")
     plt.fill_between(list(range(len(rnn_means))),
-                     rnn_means - rnn_conf,
-                     rnn_means + rnn_conf,
+                     rnn_means - 2 * rnn_conf,
+                     rnn_means + 2 * rnn_conf,
                      color="gray", alpha=0.2)
 
     plt.axvline(len(train_data), color="purple", linestyle='--')
@@ -254,5 +256,5 @@ def main(retrain=True, bootstrap_method='gp', n_rnns=10, plot_preds=True, filter
 
 
 if __name__ == "__main__":
-    main(retrain=True, bootstrap_method='gp',
-         n_rnns=100, plot_preds=True, filter_bad_models=True)
+    main(retrain=False, bootstrap_method='gp',
+         n_rnns=50, plot_preds=True, filter_bad_models=True)
