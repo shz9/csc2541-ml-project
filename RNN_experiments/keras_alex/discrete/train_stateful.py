@@ -16,20 +16,21 @@ parser.add_argument("--seq-dim", default=1, dest="seq_dim")
 parser.add_argument("--train-percent", default=0.7, dest="train_percent")
 parser.add_argument("--co2", default="data/mauna-loa-atmospheric-co2.csv", dest="co2")
 parser.add_argument("--erie", default="data/monthly-lake-erie-levels-1921-19.csv", dest="erie")
+parser.add_argument("--solar", default="data/solar_irradiance.csv", dest="solar")
 parser.add_argument("--window-length", default=20, dest="window_length")
 parser.add_argument("--batch-size", default=1, dest="batch_size")
 parser.add_argument("--epochs", default=1, dest="epochs")
-parser.add_argument("--differences-predictions", default="results/stateful_differences_co2_predictions.png", dest="differences_predictions")
-parser.add_argument("--differences-residuals", default="results/stateful_differences_co2_erie_residuals.png", dest="differences_residuals")
+parser.add_argument("--differences-predictions", default="results/stateful_differences_solar_predictions.png", dest="differences_predictions")
+parser.add_argument("--differences-residuals", default="results/stateful_differences_solar_erie_residuals.png", dest="differences_residuals")
 parser.add_argument("--models", default="models/", dest="models")
 parser.add_argument("--predictions", default="predictions/", dest="predictions")
 parser.add_argument("--cv", default=False, dest="cv")
 parser.add_argument("--diff-interval", default=1, dest="diff_interval")
-parser.add_argument("--direct_predictions", default="results/stateful_direct_erie_co2_predictions.png", dest="direct_predictions")
-parser.add_argument("--direct_residuals", default="results/stateful_direct_erie_co2_residuals.png", dest="direct_residuals")
+parser.add_argument("--direct_predictions", default="results/stateful_direct_solar_predictions.png", dest="direct_predictions")
+parser.add_argument("--direct_residuals", default="results/stateful_direct_solar_residuals.png", dest="direct_residuals")
 
-BEST_PARAMS = {"epochs": 30, "kernel_initializer": RandomNormal(), "kernel_regularizer": l1_l2(0.001, 0.001),
-               "hidden_units": 10, "activation": "tanh"}
+BEST_PARAMS = {"epochs": 30, "kernel_initializer": RandomNormal(), "kernel_regularizer": None,
+               "hidden_units": 100, "activation": "tanh"}
 
 def train_stateful(x_train, y_train, i=-1, x_test=None, y_test=None, args=None):
     model = create_model_stateful(args.batch_size, args.seq_len, args.seq_dim,
@@ -92,7 +93,7 @@ def evaluate_grid_search(grid, x, y):
 
 
 def train_differences(args):
-    data = load_co2(args.co2)
+    data = load_solar(args.solar)
     data, x_train, y_train, x_test, y_test, scaler = create_differenced_data(data, args)
 
     if args.cv:
@@ -132,13 +133,13 @@ def train_differences(args):
     final = np.array(final)
     expected = np.array(expected)
 
-    plot_predictions(np.arange(len(final)), expected, final, "Sliding Pred Stateful Differences", args.differences_predictions,
+    plot_predictions(np.arange(len(final)), expected, final, len(x_train), "Sliding Pred Stateful Differences", args.differences_predictions,
                      BEST_PARAMS)
 
 
 def train_direct_observations(args):
-    data = load_co2(args.co2)
-    x_train, y_train, x_test, y_test, scaler, trend = create_direct_data(data, args)
+    data = load_solar(args.solar)
+    x_train, y_train, x_test, y_test, scaler, trend = create_detrended_data(data, args)
 
     if args.cv:
         grid = create_grid_search(args, x_train.shape[0])
@@ -158,12 +159,12 @@ def train_direct_observations(args):
     y_pred = y_pred + trend[args.window_length + 1:]
     y_true = y_true + trend[args.window_length + 1:]
 
-    plot_predictions(np.arange(len(y_true)), y_true, y_pred, "Sliding Pred Stateful Direct",
+    plot_predictions(np.arange(len(y_true)), y_true, y_pred, len(x_train), "Sliding Pred Stateful Direct",
                      args.direct_predictions, BEST_PARAMS)
 
 
 def main(args):
-    train_differences(args)
+    # train_differences(args)
     train_direct_observations(args)
 
 

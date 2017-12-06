@@ -20,6 +20,19 @@ def load_erie(file_path):
     return erie
 
 
+def load_solar(file_path):
+    solar = pd.read_csv(file_path, header=None, index_col=None)
+
+    solar = solar[1].values
+
+    return solar
+
+
+def get_data(filepath, fun):
+    data = fun(filepath)
+
+    return data
+
 def create_window_data(data, window_size):
     temp = []
 
@@ -77,6 +90,19 @@ def invert_scale(scaler, values):
 
 
 def create_direct_data(data, args):
+    x, y = create_window_data(data, args["window_length"] + 1)
+
+    split = int(args["train_percent"] * len(x))
+
+    x_train, y_train = x[:split], y[:split]
+    x_test, y_test = x[split:], y[split:]
+
+    scaler, x_train, y_train, x_test, y_test = scale(x_train, y_train, x_test, y_test)
+
+    return x_train, y_train, x_test, y_test, scaler
+
+
+def create_detrended_data(data, args):
     data, trend = detrend(data, args)
 
     x, y = create_window_data(data, args.window_length + 1)
@@ -90,11 +116,11 @@ def create_direct_data(data, args):
     return x_train, y_train, x_test, y_test, scaler, trend
 
 
-def create_differenced_data(data, args):
-    differenced = difference(data, args.diff_interval)
-    x, y = create_window_data(differenced, args.window_length + 1)
+def create_differenced_data(data, diff_interval, window_length, train_percent):
+    differenced = difference(data, diff_interval)
+    x, y = create_window_data(differenced, window_length + 1)
 
-    split = int(args.train_percent * len(x))
+    split = int(train_percent * len(x))
 
     x_train, y_train = x[:split], y[:split]
     x_test, y_test = x[split:], y[split:]

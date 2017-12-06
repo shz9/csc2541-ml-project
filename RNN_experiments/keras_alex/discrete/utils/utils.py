@@ -1,5 +1,8 @@
 import numpy as np
 
+from utils.mc import mc_forward
+from models import reinstantiate_model
+
 def print_grid_results(grid_result):
     print("Best: %f using %s" % (grid_result.best_score_, grid_result.best_params_))
     means = grid_result.cv_results_['mean_test_score']
@@ -9,11 +12,14 @@ def print_grid_results(grid_result):
         print("%f (%f) with: %r" % (mean, stdev, param))
 
 
-def predict_sliding(model, x_train, test_len, args, full=True):
+def predict_sliding(model, x_train, test_len, batch_size, seq_len, full=True):
+    if isinstance(model, list):
+        model = reinstantiate_model(model[0], model[1])
+
     model.reset_states()
 
-    train_pred = model.predict(x_train, batch_size=args.batch_size)
-    cur_window = train_pred[-args.seq_len:]
+    train_pred = model.predict(x_train, batch_size=batch_size)
+    cur_window = train_pred[-seq_len:]
     pred = []
 
     for i in range(test_len):
@@ -41,3 +47,29 @@ def evaluate_model_static(model, x, y, args):
     pred = model.predict(x, batch_size=args.batch_size)
 
     return pred
+
+
+def predict_different_start_points(config, weights, x_train, test_len, n_samples=5, state="stateless", full=True):
+    state_points = 12
+    results = []
+
+    for i in range(1, state_points + 1):
+        temp = mc_forward(config, weights, x_train[:-i], test_len + i, n_samples=n_samples, state=state, full=full)
+        results.append(temp)
+
+    results = np.array(results)
+
+    return results
+
+
+def pred_temp(model, x_train, test_len, args, full=True):
+    state_points = 12
+    results = []
+
+    for i in range(1, state_points + 1):
+        temp = predict_sliding(model, x_train[:-i], test_len + i, args)
+        results.append(temp)
+
+    results = np.array(results)
+
+    return results
