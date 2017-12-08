@@ -1,219 +1,250 @@
+"""
+Author: Shadi Zabad
+Date: November 2017
+"""
+
 import glob
 import pickle
 import numpy as np
 import os
 import pandas as pd
-from keras.layers import Dense
-from keras.layers import LSTM
-from keras.models import Sequential
-from keras.models import load_model, save_model
+from tensorflow import set_random_seed
+from keras.layers import Dense, LSTM
+from keras.models import Sequential, load_model, save_model
 from matplotlib import pyplot as plt
-from sklearn.externals.joblib import Parallel, delayed
-from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_squared_error
+from data.data_reader import read_lake_erie_data, read_mauna_loa_co2_data
 from RNN_experiments.keras_shadi.bootstrap.other_bootstrap import stationary_boostrap_method, \
     moving_block_bootstrap_method, circular_block_bootstrap_method
 from joblib import Parallel, delayed
 
+# ------------------------------------------------------------
 
-# frame a sequence as a supervised learning problem
+DATASET = "co2"
+DATASET_TITLE = "CO2 Dataset"
+RETRAIN = True
+BOOTSTRAP_METHOD = 'gp'
+ENSEMBLE_SIZE = 20
+BEST_PERFORMING_FRACTION = .8
+N_JOBS = 10
+N_TRAINING_EPOCHS = 100
+GP_BOOTSTRAP_SAMPLES_PATH = "./bootstrap/gp_samples/co2/*.pkl"
+SET_STATE_PERC = 0.7
+
+X_LABEL = "Month"
+Y_LABEL = "CO2 Concentration (PPM)"
+
+# ------------------------------------------------------------
+
+# Set the seed
+np.random.seed(1)
+set_random_seed(2)
+
+# ------------------------------------------------------------
+
+
 def timeseries_to_supervised(data, lag=1):
+
+    # Transform the data to differences between y[t+1] and y[t]:
+    if isinstance(data[1], np.ndarray):
+        t_data = pd.Series(data[1])
+    else:
+        t_data = data[1]
+
+    data = t_data.diff()
+
     df = pd.DataFrame(data)
-    columns = [df.shift(i) for i in range(1, lag+1)]
+
+    columns = [df.shift(i) for i in range(1, lag + 1)]
     columns.append(df)
+
     df = pd.concat(columns, axis=1)
     df.fillna(0, inplace=True)
-    return df
 
-
-# scale train and test data to [-1, 1]
-def scale(train, test):
-    # fit scaler
-    scaler = MinMaxScaler(feature_range=(-1, 1))
-    scaler = scaler.fit(train)
-    # transform train
-    train = train.reshape(train.shape[0], train.shape[1])
-    train_scaled = scaler.transform(train)
-    # transform test
-    test = test.reshape(test.shape[0], test.shape[1])
-    test_scaled = scaler.transform(test)
-    return scaler, train_scaled, test_scaled
-
-
-# inverse scaling for a forecasted value
-def invert_scale(scaler, X, value):
-    new_row = [x for x in X] + [value]
-    array = np.array(new_row)
-    array = array.reshape(1, len(array))
-    inverted = scaler.inverse_transform(array)
-    return inverted[0, -1]
-
-
-# fit an LSTM network to training data
-def fit_lstm(train, batch_size, nb_epoch, neurons):
-    X, y = train[:, 0:-1], train[:, -1]
+    X, y = df.values[:, 0:-1], df.values[:, -1]
     X = X.reshape(X.shape[0], 1, X.shape[1])
+
+    return X, y
+
+
+def create_lstm_model(input_shape=(1, 1, 1), neurons=50, n_lstm_layers=3):
+
+    if n_lstm_layers < 1:
+        raise Exception("The model should have at least 1 lstm layer.")
+
+    # Create and compile the model in Keras:
     model = Sequential()
-    model.add(LSTM(neurons, batch_input_shape=(batch_size, X.shape[1], X.shape[2]), stateful=True))
+
+    # Modified the code so that all models are initialized with zeros.
+    # This should isolate uncertainty due to initialization from
+    # uncertainty in the data.
+    if n_lstm_layers == 1:
+        model.add(LSTM(neurons,
+                       batch_input_shape=input_shape,
+                       stateful=True))
+    else:
+        model.add(LSTM(neurons,
+                       batch_input_shape=input_shape,
+                       stateful=True,
+                       return_sequences=True
+                       ))
+
+        for nl in range(n_lstm_layers - 2):
+            model.add(LSTM(neurons,
+                           stateful=True,
+                           return_sequences=True
+                           ))
+
+        model.add(LSTM(neurons,
+                       stateful=True
+                       ))
+
+    # Add final layer:
     model.add(Dense(1))
+
+    # Compile model:
     model.compile(loss='mean_squared_error', optimizer='adam')
 
-    for i in range(nb_epoch):
-        model.fit(X, y, epochs=1, batch_size=batch_size, verbose=0, shuffle=False)
-        model.reset_states()
     return model
 
 
-# make a one-step forecast
-def forecast_lstm(model, batch_size, X):
-    X = X.reshape(1, 1, len(X))
-    yhat = model.predict(X, batch_size=batch_size)
-    return yhat[0, 0]
+def train_model(Xi, Yi, idx):
 
+    # Create the LSTM model
+    lstm_model = create_lstm_model(input_shape=(1, Xi.shape[1], Xi.shape[2]))
 
-def train_model(ith_dataset, idx):
-    diff_values = ith_dataset['CO2Concentration'].diff()
+    # Train the model for <n_epochs>
+    for i in range(N_TRAINING_EPOCHS):
+        lstm_model.fit(Xi, Yi, epochs=1, batch_size=1, verbose=0, shuffle=False)
+        lstm_model.reset_states()
 
-    # transform data to be supervised learning
-    supervised = timeseries_to_supervised(diff_values, 1)
-
-    lstm_model = fit_lstm(supervised.values, 1, 100, 50)
-
-    y_train_pred = lstm_model.predict(supervised.values[:, 0].reshape(-1, 1, 1), batch_size=1)
+    # The following 3 steps are meant to check how the model is doing on the training data
+    # This may be used by later steps for filtering bad models from ensemble
+    y_train_pred = lstm_model.predict(Xi, batch_size=1)
 
     lstm_model.reset_states()
 
-    mse = mean_squared_error(supervised.values[:, -1], y_train_pred)
+    mse = mean_squared_error(Yi, y_train_pred)
+    print idx, mse
 
-    with open("./model_performance/" + str(idx) + ".pkl", "wb") as lf:
+    # Save performance score and trained model:
+
+    with open("./model_performance/" + DATASET + "/" + str(idx) + ".pkl", "wb") as lf:
         pickle.dump(mse, lf)
 
-    save_model(lstm_model, "./models/" + str(idx) + ".kmodel")
+    save_model(lstm_model, "./models/" + DATASET + "/" + str(idx) + ".kmodel")
 
 
-def make_model_predictions(train, all_y, init_val, idx):
+def lstm_predict(ground_truth, model_idx):
 
-    model = load_model("./models/" + str(idx) + ".kmodel")
-    # forecast the entire training dataset to build up state for forecasting
-    # train_reshaped = train[:, 0].reshape(len(train), 1, 1)
+    model = load_model("./models/" + DATASET + "/" + str(model_idx) + ".kmodel")
+    predictions = [ground_truth[0]]
 
-    # model.predict(train_reshaped, batch_size=1)
+    if SET_STATE_PERC == 0:
+        prev = np.array([ground_truth[1] - ground_truth[0]])
+    else:
+        prev = np.zeros(1)
 
-    # walk-forward validation on the test data
-    predictions = []
-    prev = None
-    prev_history = [init_val]  # initial
-    for i in range(len(all_y)):
-        # make one-step forecast
-        if prev is None:
-            prev = all_y[i, 0:-1]
+    for i in range(len(ground_truth)):
 
-        yhat = forecast_lstm(model, 1, prev)
-        prev = yhat
-        # reshape
-        prev = np.array([prev])
-        # invert scaling
-        # yhat = invert_scale(scaler, X, yhat)
-        # print('yhat after inverse scale: ', yhat)
-        # invert differencing
-        # yhat = inverse_difference(prev_history, yhat, i)
-        yhat = yhat + prev_history[i]
-        prev_history.append(yhat)
-        # store forecast
-        predictions.append(yhat)
+        if i < SET_STATE_PERC * len(ground_truth):
+            # Use these measurements to set the state of the model:
+            yhat = ground_truth[i + 1] - ground_truth[i]
+        else:
+            yhat = model.predict(prev.reshape(1, 1, -1), batch_size=1)[0, 0]
 
-    with open("./predictions/" + str(idx) + ".pkl", "wb") as pf:
+        prev = np.array([yhat])
+        predictions.append(yhat + predictions[i])
+
+    with open("./predictions/" + str(model_idx) + ".pkl", "wb") as pf:
         pickle.dump(predictions, pf)
 
 
-def main(retrain=True, bootstrap_method='gp', n_rnns=10, plot_preds=True, filter_bad_models=True):
+def bootstrap_data(train_data, bootstrap_method, n_samples):
 
-    # load dataset
-    ex_dataset = pd.read_csv('../../data/mauna-loa-atmospheric-co2.csv',
-                             header=None)
-    ex_dataset.columns = ['CO2Concentration', 'Time']
+    if bootstrap_method == 'gp':
 
-    train_data = ex_dataset.loc[ex_dataset.Time <= 1980, ['CO2Concentration', 'Time']]
+        # Due to issues with multiprocessing in sklearn not terminating
+        # and training jobs for RNNs not starting as a results,
+        # I had to generate GP samples in a separate script.
+        # Will find a way to fix this issue later on.
+        bootstrapped_dataset = []
 
-    if retrain:
+        for gpf in glob.glob(GP_BOOTSTRAP_SAMPLES_PATH)[::-1]:
+            with open(gpf, "rb") as gpfp:
+                bootstrapped_dataset.append(pickle.load(gpfp))
 
-        # Delete old models:
-        for mod_path in glob.glob("./models/*.kmodel"):
-            os.remove(mod_path)
+            if len(bootstrapped_dataset) == n_samples:
+                break
 
-        for mod_path in glob.glob("./model_performance/*.pkl"):
-            os.remove(mod_path)
+    elif bootstrap_method == 'stationary_block':
+        bootstrapped_dataset = stationary_boostrap_method(train_data.index,
+                                                          train_data,
+                                                          n_samples=n_samples)
+    elif bootstrap_method == 'moving_block':
+        bootstrapped_dataset = moving_block_bootstrap_method(train_data.index,
+                                                             train_data,
+                                                             n_samples=n_samples)
+    elif bootstrap_method == 'circular_block':
+        bootstrapped_dataset = circular_block_bootstrap_method(train_data.index,
+                                                               train_data,
+                                                               n_samples=n_samples)
+    else:
+        raise Exception("Bootstrap method not implemented!")
 
-        if bootstrap_method == 'gp':
+    transform_datasets = []
 
-            # Due to issues with multiprocessing in sklearn not terminating
-            # and training jobs for RNNs not starting as a results,
-            # I had to generate GP samples in a separate script.
-            # Will find a way to fix this issue later on.
-            bootstrapped_dataset = []
+    for bt in bootstrapped_dataset:
+        transform_datasets.append(timeseries_to_supervised(bt))
 
-            for gpf in glob.glob("./bootstrap/gp_samples/*.pkl"):
-                with open(gpf, "rb") as gpfp:
-                    bootstrapped_dataset.append(pickle.load(gpfp))
+    return transform_datasets
 
-                if len(bootstrapped_dataset) == n_rnns:
-                    break
 
-        elif bootstrap_method == 'stationary_block':
-            bootstrapped_dataset = stationary_boostrap_method(train_data['Time'],
-                                                              train_data['CO2Concentration'],
-                                                              n_samples=n_rnns)
-        elif bootstrap_method == 'moving_block':
-            bootstrapped_dataset = moving_block_bootstrap_method(train_data['Time'],
-                                                                 train_data['CO2Concentration'],
-                                                                 n_samples=n_rnns)
-        elif bootstrap_method == 'circular_block':
-            bootstrapped_dataset = circular_block_bootstrap_method(train_data['Time'],
-                                                                   train_data['CO2Concentration'],
-                                                                   n_samples=n_rnns)
-        else:
-            raise Exception("Bootstrap method not implemented!")
+def prepare_data(dataset, fraction_train=.7, bootstrap_method=None, n_samples=None):
 
-        print "Training ensemble..."
-        Parallel(n_jobs=20, verbose=10)(delayed(train_model)(pd.DataFrame({'Time': np.ravel(dat[0]),
-                                                                          'CO2Concentration': np.ravel(dat[1])}),
-                                                             idx)
-                                        for idx, dat in enumerate(bootstrapped_dataset))
-        print "Done training ensemble!"
+    if dataset == "co2":
+        dataset = read_mauna_loa_co2_data()
+        train_dataset = dataset['CO2Concentration'][:int(fraction_train * len(dataset))]
+        test_dataset = dataset['CO2Concentration'][int(fraction_train * len(dataset)):]
+    elif dataset == "erie":
+        dataset = read_lake_erie_data()
+        train_dataset = dataset['Level'][:int(fraction_train * len(dataset))]
+        test_dataset = dataset['Level'][int(fraction_train * len(dataset)):]
+    else:
+        raise Exception("No implementation for the requested dataset: " + str(dataset))
 
-    for pred_path in glob.glob("./predictions/*.pkl"):
-        os.remove(pred_path)
+    if bootstrap_method is None:
+        return train_dataset, test_dataset
+    else:
+        bootstrapped_train = bootstrap_data(train_dataset, bootstrap_method, n_samples)
+        return train_dataset, test_dataset, bootstrapped_train
 
-    diff_values = ex_dataset['CO2Concentration'].diff()
-    # transform data to be supervised learning
-    supervised = timeseries_to_supervised(diff_values, 1)
-    supervised_values = supervised.values
 
-    # split data into train and test-sets
-    train, test = supervised_values[0:-228], supervised_values[-228:]
+def plot_data(train_data, test_data, lstm_mean, lstm_sd):
 
-    mod_pf = {}
-    for modpf in glob.glob("./model_performance/*.pkl"):
-        with open(modpf, "rb") as modof:
-            mod_pf[int(os.path.basename(modpf).replace(".pkl", ""))] = pickle.load(modof)
+    plt.plot(pd.concat([train_data, test_data]), color="blue")
 
-    best_models = []
+    # Plot individual predictions:
+    #  for pred in preds:
+    #      plt.plot(pred, color="green", alpha=.1)
 
-    for midx in mod_pf.keys():
-        if np.sqrt(mod_pf[midx]) < .07:
-            print np.sqrt(mod_pf[midx])
-            best_models.append(midx)
-        elif not filter_bad_models:
-            best_models.append(midx)
+    plt.plot(lstm_mean, color="red")
 
-    if len(best_models) < 1:
-        raise Exception("None of the models achieved the minimum threshold for the MSE metric.")
+    plt.fill_between(list(range(len(lstm_mean))),
+                     lstm_mean - 2 * lstm_sd,
+                     lstm_mean + 2 * lstm_sd,
+                     color="gray", alpha=0.2)
 
-    Parallel(n_jobs=20, verbose=10)(delayed(make_model_predictions)(train,
-                                                                    supervised_values,  # test,
-                                                                    ex_dataset['CO2Concentration'][0], # ex_dataset['CO2Concentration'][len(test)+1],
-                                                                    idx)
-                                    for idx in best_models)
+    plt.axvline(len(train_data), color="black", linestyle='--')
+
+    plt.title(DATASET_TITLE)
+    plt.xlabel(X_LABEL)
+    plt.ylabel(Y_LABEL)
+
+    plt.savefig("./figures/" + DATASET_TITLE + ".png")
+
+
+def synthesize_predictions():
 
     preds = []
 
@@ -221,40 +252,73 @@ def main(retrain=True, bootstrap_method='gp', n_rnns=10, plot_preds=True, filter
         with open(predf, "rb") as pf:
             preds.append(pickle.load(pf))
 
-    print len(preds)
-
-    #for mod in rnn_models:
-    #    preds.append(make_model_predictions(mod, train, test, ex_dataset['CO2Concentration'][len(test)+1]))
+    if len(preds) < 1:
+        raise Exception("Failed to generate predictions!")
 
     # line plot of observed vs predicted
-    rnn_means = np.array([])
-    rnn_conf = np.array([])
+    lstm_means = np.array([])
+    lstm_sd = np.array([])
 
     for k in range(len(preds[0])):
         step_vals = [el[k] for el in preds]
-        rnn_means = np.append(rnn_means, np.mean(step_vals))
-        #rnn_means = np.append(rnn_means, stats.trim_mean(step_vals, 0.3))
-        rnn_conf = np.append(rnn_conf, np.std(step_vals))
+        lstm_means = np.append(lstm_means, np.mean(step_vals))
+        lstm_sd = np.append(lstm_sd, np.std(step_vals))
 
-    #plt.plot(ex_dataset['CO2Concentration'][-228:])
-    plt.plot(ex_dataset['CO2Concentration'], color="blue")
-    if plot_preds:
-        for pred in preds:
-            plt.plot(pred, color="green", alpha=.1)
-    plt.plot(rnn_means, color="red")
-    plt.fill_between(list(range(len(rnn_means))),
-                     rnn_means - 2 * rnn_conf,
-                     rnn_means + 2 * rnn_conf,
-                     color="gray", alpha=0.2)
+    return lstm_means, lstm_sd
 
-    plt.axvline(len(train_data), color="purple", linestyle='--')
 
-    plt.title("Bootstrap Method: " + bootstrap_method + " / Number of RNNs: " + str(len(best_models)))
+def main():
 
-    plt.savefig("./figures/" + bootstrap_method + "_trained" + str(n_rnns) + "_selected" + str(len(best_models)) +
-                "_" + ["no_preds", "preds"][plot_preds] + ".png")
+    # ----------------------------------------
+    # Step 1: Train the models in the ensemble
+    if RETRAIN:
+
+        train, test, bs_train = prepare_data(DATASET,
+                                             bootstrap_method=BOOTSTRAP_METHOD,
+                                             n_samples=ENSEMBLE_SIZE)
+
+        # Delete old models & their performance scores:
+        for mod_path in glob.glob("./models/" + DATASET + "/*.kmodel"):
+            os.remove(mod_path)
+
+        for mod_path in glob.glob("./model_performance/" + DATASET + "/*.pkl"):
+            os.remove(mod_path)
+
+        print "Training ensemble..."
+
+        Parallel(n_jobs=N_JOBS)(delayed(train_model)(dat[0], dat[1], idx)
+                                for idx, dat in enumerate(bs_train))
+
+        print "Done training ensemble!"
+
+    else:
+        train, test = prepare_data(DATASET)
+
+    # ----------------------------------------
+    # Step 2: Generate predictions from trained models:
+
+    # Delete old predictions
+    for pred_path in glob.glob("./predictions/*.pkl"):
+        os.remove(pred_path)
+
+    # Load trained models' performance scores
+    mod_pf = {}
+    for modpf in glob.glob("./model_performance/" + DATASET + "/*.pkl"):
+        with open(modpf, "rb") as modof:
+            mod_pf[int(os.path.basename(modpf).replace(".pkl", ""))] = pickle.load(modof)
+
+    # Select the best models:
+    best_models = sorted(mod_pf.keys(), key=lambda x: mod_pf[x])[:int(np.ceil(BEST_PERFORMING_FRACTION * len(mod_pf)))]
+
+    # Generate predictions from best models:
+    Parallel(n_jobs=N_JOBS)(delayed(lstm_predict)(pd.concat([test, train]),
+                                                  idx)
+                            for idx in best_models)
+
+    lstm_means, lstm_sd = synthesize_predictions()
+
+    plot_data(train, test, lstm_means, lstm_sd)
 
 
 if __name__ == "__main__":
-    main(retrain=False, bootstrap_method='gp',
-         n_rnns=50, plot_preds=True, filter_bad_models=True)
+    main()

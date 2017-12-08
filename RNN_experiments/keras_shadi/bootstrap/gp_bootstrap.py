@@ -7,6 +7,7 @@ This script uses Gaussian Processes to create sub-samples to train RNNs on.
 """
 
 from sklearn.gaussian_process import GaussianProcessRegressor
+from data.data_reader import read_mauna_loa_co2_data, read_lake_erie_data
 from sklearn.gaussian_process.kernels import RBF, WhiteKernel, RationalQuadratic, ExpSineSquared
 import pandas as pd
 import pickle
@@ -42,12 +43,11 @@ def gp_bootstrap_shift(X, Y, kernel, n_samples=50):
     return boot_samples
 
 
-def gp_bootstrap_noise(X, Y, kernel, n_samples=50):
+def gp_bootstrap_noise(X, Y, kernel, n_samples=50, alpha=20.0):
 
     # First, we fit a GP model to the data
     # (with noise added, represented by the parameter alpha):
-
-    m = GaussianProcessRegressor(kernel=kernel, alpha=20)
+    m = GaussianProcessRegressor(kernel=kernel, alpha=alpha)
     m.fit(X, Y)
 
     gp_samples = m.sample_y(X, n_samples=n_samples).T
@@ -60,13 +60,11 @@ def gp_bootstrap_noise(X, Y, kernel, n_samples=50):
     return boot_samples
 
 
-def generate_samples(n_samples):
+def generate_co2_samples(n_samples):
 
-    ex_dataset = pd.read_csv('../../../data/mauna-loa-atmospheric-co2.csv',
-                             header=None)
-    ex_dataset.columns = ['CO2Concentration', 'Time']
+    co2_dataset = read_mauna_loa_co2_data()
 
-    train_data = ex_dataset.loc[ex_dataset.Time <= 1980, ['CO2Concentration', 'Time']]
+    train_data = co2_dataset.iloc[:int(.7 * len(co2_dataset)), ]
 
     samps = gp_bootstrap_noise(train_data['Time'].reshape(-1, 1),
                                train_data['CO2Concentration'].reshape(-1, 1),
@@ -75,15 +73,105 @@ def generate_samples(n_samples):
                                                                                   periodicity=1) +
                                0.446 ** 2 * RationalQuadratic(alpha=17.7, length_scale=0.957) +
                                0.197 ** 2 * RBF(length_scale=0.138) + WhiteKernel(noise_level=0.0336),
-                               n_samples=n_samples)
+                               n_samples=n_samples,
+                               alpha=19.0)
 
-    for osf in glob.glob("./gp_samples/*.pkl"):
+    for osf in glob.glob("./gp_samples/co2/*.pkl"):
         os.remove(osf)
 
     for idx, samp in enumerate(samps):
-        with open("./gp_samples/" + str(idx) + ".pkl", "wb") as sf:
+        with open("./gp_samples/co2/" + str(idx) + ".pkl", "wb") as sf:
             pickle.dump(samp, sf)
 
 
+def generate_erie_samples(n_samples):
+    erie_dataset = read_lake_erie_data()
+
+    train_data = erie_dataset.iloc[:int(.7 * len(erie_dataset)), ]
+
+    samps = gp_bootstrap_noise(np.array(train_data.index).reshape(-1, 1),
+                               train_data['Level'].reshape(-1, 1),
+                               3.27 ** 2 * ExpSineSquared(length_scale=180, periodicity=10) *
+                               ExpSineSquared(length_scale=1.44),
+                               n_samples=n_samples,
+                               alpha=.09)
+
+    for osf in glob.glob("./gp_samples/erie/*.pkl"):
+        os.remove(osf)
+
+    for idx, samp in enumerate(samps):
+        with open("./gp_samples/erie/" + str(idx) + ".pkl", "wb") as sf:
+            pickle.dump(samp, sf)
+
+
+def plot_samples(dataset, limit=None):
+
+    samp_dat = []
+
+    for s in glob.glob("./gp_samples/" + dataset + "/*.pkl"):
+
+        with open(s, "rb") as sf:
+            samp_dat.append(pickle.load(sf))
+
+        if limit is not None:
+            if len(samp_dat) >= limit:
+                break
+
+    for dat in samp_dat:
+        plt.plot(dat[1], alpha=.3)
+
+    plt.show()
+
+
+def test():
+    pd.set_option('display.max_columns', None)
+    pd.set_option('display.max_rows', None)
+    dataset = read_lake_erie_data()
+    v = np.array(dataset.index).reshape(-1, 1)
+    bootstrapped_dataset = gp_bootstrap_noise(np.array(dataset.index).reshape(-1, 1),
+                                              dataset["Level"].reshape(-1, 1),
+                                              3.27 ** 2 * ExpSineSquared(length_scale=180, periodicity=10) *
+                                              ExpSineSquared(length_scale=1.44),
+                                              n_samples=50,
+                                              alpha=.09)
+
+    co2_dataset = read_mauna_loa_co2_data()
+
+    samps = gp_bootstrap_noise(co2_dataset['Time'].reshape(-1, 1),
+                               co2_dataset['CO2Concentration'].reshape(-1, 1),
+                               34.4 ** 2 * RBF(length_scale=41.8) +
+                               3.27 ** 2 * RBF(length_scale=180) * ExpSineSquared(length_scale=1.44,
+                                                                                  periodicity=1) +
+                               0.446 ** 2 * RationalQuadratic(alpha=17.7, length_scale=0.957) +
+                               0.197 ** 2 * RBF(length_scale=0.138) + WhiteKernel(noise_level=0.0336),
+                               n_samples=50,
+                               alpha=30.0)
+
+    f, (ax1, ax2) = plt.subplots(1, 2)
+
+    for dat in bootstrapped_dataset:
+        ax1.plot(dat[1], alpha=.1, color="gray")
+
+    ax1.plot(dataset["Level"], color="blue")
+
+    ax1.set_xlabel("Month")
+    ax1.set_ylabel("Level (M)")
+
+    for dat in samps:
+        ax2.plot(dat[1], alpha=.1, color="gray")
+
+    ax2.plot(co2_dataset['CO2Concentration'], color="blue")
+
+    ax2.set_xlabel("Month")
+    ax2.set_ylabel("CO2 Concentration (PPM)")
+
+    plt.suptitle("Example of Samples from GP Bootstrap")
+
+    plt.show()
+
+
 if __name__ == '__main__':
-    generate_samples(100)
+    #test()
+    #generate_co2_samples(100)
+    #generate_erie_samples(100)
+    plot_samples("co2", limit=50)

@@ -3,7 +3,7 @@ from arch.bootstrap import MovingBlockBootstrap
 from arch.bootstrap import CircularBlockBootstrap
 
 
-def stationary_boostrap_method(X, Y, block_size=30, n_samples=50):
+def stationary_boostrap_method(X, Y, block_size=50, n_samples=50):
 
     boot_samples = []
     bs = StationaryBootstrap(block_size, X, y=Y)
@@ -14,7 +14,7 @@ def stationary_boostrap_method(X, Y, block_size=30, n_samples=50):
     return boot_samples
 
 
-def moving_block_bootstrap_method(X, Y, block_size=150, n_samples=50):
+def moving_block_bootstrap_method(X, Y, block_size=50, n_samples=50):
 
     boot_samples = []
     bs = MovingBlockBootstrap(block_size, X, y=Y)
