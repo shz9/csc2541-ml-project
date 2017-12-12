@@ -1,137 +1,120 @@
-import numpy as np
-import scipy.signal as sp
 from pyESN.pyESN import ESN
-from matplotlib import pyplot as plt
-import csv
+from utils.data import *
+from utils.utils import *
+from utils.plot import *
+import pickle
 
-# lake erie
-# 70,5,45
-with open('./data/monthly-lake-erie-levels-1921-19.csv', 'rt') as f:
-    reader = csv.reader(f)
-    lake = list(reader)
 
-y = []
-for i in range(1, len(lake)):
-    y.append(float(lake[i][1]))
+def grid_search(x, y):
+    x_train, y_train = x[:int(len(x) * 0.7)], y[:int(len(y) * 0.7)]
+    x_test, y_test = x[int(len(x) * 0.7):], y[int(len(y) * 0.7):]
+    n_res = list(range(5, 51, 5))
+    s_rad = [0.1 * i for i in range(1, 101)]
+    rng = list(range(1,501))
+    min_mse = float("inf")
+    best_par = [0] * 4
+    for res in n_res:
+        for rad in s_rad:
+            for rs in rng:
+                model = ESN(n_inputs=len(x_train[0]), n_outputs=1,
+                            n_reservoir=res,
+                            spectral_radius=rad,
+                            random_state=rs)
 
-y = np.array(y)
-trainlen = 400
-future = 200
+                model.fit(x_train, y_train)
+                pred = model.predict(x_test)
+                mse = np.sqrt(np.mean((pred.flatten() - y_test) ** 2))
+                if mse < min_mse:
+                    min_mse = mse
+                    best_par = [res, rad, rs]
 
-# solar
-# 120, 5, 4
-with open('./data/solar.csv', 'rt') as f:
-    reader = csv.reader(f)
-    solar = list(reader)
+    return best_par
 
-y = []
-for i in range(1, len(solar)):
-    y.append(float(solar[i][2]))
 
-y = np.array(y)
-trainlen = 300
-future = 102
+def weight_uncertainty(model, n_esns, x_train, y_train, x_test_len, seq_len, window_length, scaler):
+    trainlen = len(y_train)
+    future = x_test_len
+    pred = np.zeros(shape=(n_esns, trainlen + future))
+    for i in range(n_esns):
+        pred_training = model.fit(x_train, y_train)
+        prediction = predict_sliding(model, x_train, x_test_len, seq_len, window_length)
+        prediction = invert_scale(scaler, prediction)
+        prediction = prediction + trend[window_length + 1:]
+        pred[i] = prediction
+    # get mean & std over predictions
+    stats = list(map(lambda i: (np.mean(pred[:, i]), np.std(pred[:, i])), range(trainlen + future)))
+    mean = np.array([[tup[0]] for tup in stats])
+    std = np.array([[tup[1]] for tup in stats])
+    lb = [mean[i][0] - 2 * std[i][0] for i in range(trainlen + future)]
+    ub = [mean[i][0] + 2 * std[i][0] for i in range(trainlen + future)]
+    return mean, lb, ub
 
-# co2
-# 160, 32, 93
-# detrend 80, 18, 42
-from sklearn.datasets import fetch_mldata
 
-data = fetch_mldata('mauna-loa-atmospheric-co2').data
-y = data[:, 0]
+def model_uncertainty(res, x_train, y_train, x_test_len, seq_len, window_length, scaler, best):
+    trainlen = len(y_train)
+    future = x_test_len
+    pred = np.zeros(shape=(len(res), trainlen + future))
+    for i in range(len(res)):
+        model = ESN(n_inputs=len(x_train[0]), n_outputs=1,
+                    n_reservoir=res[i],
+                    spectral_radius=best[1],
+                    random_state=best[2])
+        pred_training = model.fit(x_train, y_train)
+        prediction = predict_sliding(model, x_train, x_test_len, seq_len, window_length)
+        prediction = invert_scale(scaler, prediction)
+        prediction = prediction + trend[window_length + 1:]
+        pred[i] = prediction
+    # get mean & std over predictions
+    stats = list(map(lambda i: (np.mean(pred[:, i]), np.std(pred[:, i])), range(trainlen + future)))
+    mean = np.array([[tup[0]] for tup in stats])
+    std = np.array([[tup[1]] for tup in stats])
+    lb = [mean[i][0] - 2 * std[i][0] for i in range(trainlen + future)]
+    ub = [mean[i][0] + 2 * std[i][0] for i in range(trainlen + future)]
+    return mean, lb, ub
 
-Y = []
-for i in range(len(y)):
-    Y.append(y[i])
 
-y = np.array(Y)
-y = sp.detrend(y)
-trainlen = 300
-future = 168
+def save_par(var, filename):
+    with open(filename, 'wb') as f:
+        pickle.dump(var, f)
 
-# airline
-# 150, 15, 84
-# detrend 30, 46, 12
-with open('./data/airline.csv', 'rt') as f:
-    reader = csv.reader(f)
-    airline = list(reader)
 
-y = []
-for i in range(1, len(airline)):
-    y.append(float(airline[i][2]))
+def load_par(filename):
+    with open(filename, 'rb') as f:
+        var = pickle.load(f)
+    return var
 
-y = np.array(y)
-y = sp.detrend(y)
-trainlen = 72
-future = 72
 
-""" Grid Search
-best_par = [0, 0, 0]
-min_mse = float("inf")
-for res in range(10, 60, 10):
-    for rad in range(5, 50):
-        for rs in range(1, 100):
-            esn = ESN(n_inputs = 1,
-                      n_outputs = 1,
-                      n_reservoir = res,
-                      spectral_radius = rad*0.1,
-                      random_state= rs)
+# set parameters
+window_length = 20
+train_percent = 0.7
+seq_len = 20
 
-            pred_training = esn.fit(np.ones(trainlen),y[:trainlen])
-            prediction = esn.predict(np.ones(future))
-            mse = np.sqrt(np.mean((prediction.flatten() - y[trainlen:trainlen+future])**2))
-            if mse < min_mse:
-                best_par = [res, rad, rs]
-                min_mse = mse
-"""
-# run ESN over different spectral radii with the best n_reservoir & random_state for the data
-rads = 10
-pred = np.zeros(shape=(rads, future))
-for i in range(1, rads+1):
-    esn = ESN(n_inputs = 1,
-              n_outputs = 1,
-              n_reservoir = 120,
-              spectral_radius = i*0.1,
-              random_state = 4)
+# load data
+data = load_co2("data/mauna-loa-atmospheric-co2.csv")
+# detrend, create windows over time points and normalize data
+x_train, y_train, x_test, y_test, scaler, trend = create_direct_data(data, window_length, train_percent)
+x_train = x_train.reshape(len(x_train), len(x_train[0]))
+y_train = y_train.reshape(len(y_train))
+x_test = x_test.reshape(len(x_test), len(x_test[0]))
+y_test = y_test.reshape(len(y_test))
+trainlen = len(y_train)
+future = len(y_test)
+# search for best number of hidden neurons, spectral radii & random state
+best_par = grid_search(x_train, y_train)
 
-    pred_training = esn.fit(np.ones(trainlen),y[:trainlen])
-    prediction = esn.predict(np.ones(future))
-    pred_list = [p[0] for p in prediction]
-    pred[i-1] = pred_list
-# get mean & std over predictions
-stats = list(map(lambda i: (np.mean(pred[:, i]), np.std(pred[:, i])), range(future)))
-mean = np.array([[tup[0]] for tup in stats])
-std = np.array([[tup[1]] for tup in stats])
-lb = [mean[i][0]-2*std[i][0] for i in range(future)]
-ub = [mean[i][0]+2*std[i][0] for i in range(future)]
-# plot time-series
-plt.figure(figsize=(11,5))
-plt.plot(range(0,trainlen+future),y[0:trainlen+future],'k',label="Target")
-plt.plot(range(trainlen,trainlen+future), mean,'r', label="ESN 70-45")
-plt.fill_between(range(trainlen,trainlen+future), lb, ub, facecolor='red', alpha=0.3)
-lo,hi = plt.ylim()
-plt.plot([trainlen,trainlen],[lo+np.spacing(1),hi-np.spacing(1)],'k:')
-plt.legend(loc=(0.61,1),fontsize='x-small')
-plt.show()
+# model uncertainty with variation in weights
+model = ESN(n_inputs=len(x_train[0]), n_outputs=1,
+            n_reservoir=best_par[0],
+            spectral_radius=best_par[1],
+            random_state=best_par[2])
+mean, lb, ub = weight_uncertainty(model, 100, x_train, y_train, len(x_test), seq_len, window_length, scaler)
 
-"""
-esn = ESN(n_inputs = 1,
-          n_outputs = 1,
-          n_reservoir = 160,
-          spectral_radius = 3.2,
-          random_state = 93)
+# model uncertainty with variation in number of hidden units
+n_res = list(range(15, 36))
+mean, lb, ub = model_uncertainty(n_res, x_train, y_train, len(x_test), seq_len, window_length, scaler, best_par)
 
-pred_training = esn.fit(np.ones(trainlen),y[:trainlen])
-prediction = esn.predict(np.ones(future))
-mse = np.sqrt(np.mean((prediction.flatten() - y[trainlen:trainlen+future])**2))
-
-print("test error: \n"+str(np.sqrt(np.mean((prediction.flatten() - y[trainlen:trainlen+future])**2))))
-
-plt.figure(figsize=(11,5))
-plt.plot(range(0,trainlen+future),y[0:trainlen+future],'k',label="target system")
-plt.plot(range(trainlen,trainlen+future),prediction,'r', label="free running ESN")
-lo,hi = plt.ylim()
-plt.plot([trainlen,trainlen],[lo+np.spacing(1),hi-np.spacing(1)],'k:')
-plt.legend(loc=(0.61,1),fontsize='x-small')
-plt.show()
-"""
+y_true = np.concatenate((y_train, y_test))
+y_true = invert_scale(scaler, y_true)
+y_true = y_true + trend[window_length + 1:]
+# plot results
+plot_co2(y_true, mean, lb, ub, trainlen, best_par[0], best_par[1])
