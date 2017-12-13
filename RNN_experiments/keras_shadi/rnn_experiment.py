@@ -1,11 +1,18 @@
 """
 Author: Shadi Zabad
 Date: November 2017
+-------------------
+
+Script below builds on and modifies Jason Brownlee's excellent tutorial on
+LSTMs in Keras:
+https://machinelearningmastery.com/stateful-stateless-lstm-time-series-forecasting-python/
+
 """
 
 import glob
 import pickle
 import numpy as np
+from scipy.ndimage.interpolation import shift
 import os
 import pandas as pd
 from tensorflow import set_random_seed
@@ -20,19 +27,20 @@ from joblib import Parallel, delayed
 
 # ------------------------------------------------------------
 
-DATASET = "co2"
-DATASET_TITLE = "CO2 Dataset"
-RETRAIN = True
+DATASET = "erie"
+DATASET_TITLE = "Erie Dataset"
+RETRAIN = False
 BOOTSTRAP_METHOD = 'gp'
-ENSEMBLE_SIZE = 20
-BEST_PERFORMING_FRACTION = .8
+ENSEMBLE_SIZE = 50
+BEST_PERFORMING_FRACTION = .5
 N_JOBS = 10
 N_TRAINING_EPOCHS = 100
-GP_BOOTSTRAP_SAMPLES_PATH = "./bootstrap/gp_samples/co2/*.pkl"
-SET_STATE_PERC = 0.7
+NUM_PREVIOUS_POINTS = 8
+GP_BOOTSTRAP_SAMPLES_PATH = "./bootstrap/gp_samples/erie/*.pkl"
+SET_STATE_PERC = .7
 
 X_LABEL = "Month"
-Y_LABEL = "CO2 Concentration (PPM)"
+Y_LABEL = "Water Level (M)"
 
 # ------------------------------------------------------------
 
@@ -43,7 +51,7 @@ set_random_seed(2)
 # ------------------------------------------------------------
 
 
-def timeseries_to_supervised(data, lag=1):
+def timeseries_to_supervised(data, lag=NUM_PREVIOUS_POINTS):
 
     # Transform the data to differences between y[t+1] and y[t]:
     if isinstance(data[1], np.ndarray):
@@ -67,7 +75,7 @@ def timeseries_to_supervised(data, lag=1):
     return X, y
 
 
-def create_lstm_model(input_shape=(1, 1, 1), neurons=50, n_lstm_layers=3):
+def create_lstm_model(input_shape=(1, 1, 1), neurons=50, n_lstm_layers=2):
 
     if n_lstm_layers < 1:
         raise Exception("The model should have at least 1 lstm layer.")
@@ -81,7 +89,10 @@ def create_lstm_model(input_shape=(1, 1, 1), neurons=50, n_lstm_layers=3):
     if n_lstm_layers == 1:
         model.add(LSTM(neurons,
                        batch_input_shape=input_shape,
-                       stateful=True))
+                       stateful=True,
+                       kernel_initializer='ones',
+                       bias_initializer='ones',
+                       recurrent_initializer='ones'))
     else:
         model.add(LSTM(neurons,
                        batch_input_shape=input_shape,
@@ -108,7 +119,7 @@ def create_lstm_model(input_shape=(1, 1, 1), neurons=50, n_lstm_layers=3):
     return model
 
 
-def train_model(Xi, Yi, idx):
+def train_model(Xi, Yi, idx, init_val):
 
     # Create the LSTM model
     lstm_model = create_lstm_model(input_shape=(1, Xi.shape[1], Xi.shape[2]))
@@ -118,13 +129,8 @@ def train_model(Xi, Yi, idx):
         lstm_model.fit(Xi, Yi, epochs=1, batch_size=1, verbose=0, shuffle=False)
         lstm_model.reset_states()
 
-    # The following 3 steps are meant to check how the model is doing on the training data
-    # This may be used by later steps for filtering bad models from ensemble
-    y_train_pred = lstm_model.predict(Xi, batch_size=1)
+    mse = evaluate_model(lstm_model, Xi, Yi, init_val)
 
-    lstm_model.reset_states()
-
-    mse = mean_squared_error(Yi, y_train_pred)
     print idx, mse
 
     # Save performance score and trained model:
@@ -135,15 +141,18 @@ def train_model(Xi, Yi, idx):
     save_model(lstm_model, "./models/" + DATASET + "/" + str(idx) + ".kmodel")
 
 
-def lstm_predict(ground_truth, model_idx):
+def lstm_predict(ground_truth, model_idx, num_previous_points=NUM_PREVIOUS_POINTS):
 
     model = load_model("./models/" + DATASET + "/" + str(model_idx) + ".kmodel")
+
     predictions = [ground_truth[0]]
+    prev = np.array([])
 
     if SET_STATE_PERC == 0:
-        prev = np.array([ground_truth[1] - ground_truth[0]])
+        for idx in range(1, num_previous_points + 1):
+            np.append(prev, [ground_truth[idx] - ground_truth[idx - 1]])
     else:
-        prev = np.zeros(1)
+        prev = np.zeros(num_previous_points)
 
     for i in range(len(ground_truth)):
 
@@ -153,11 +162,27 @@ def lstm_predict(ground_truth, model_idx):
         else:
             yhat = model.predict(prev.reshape(1, 1, -1), batch_size=1)[0, 0]
 
-        prev = np.array([yhat])
+        prev = shift(prev, -1, cval=yhat)
+
         predictions.append(yhat + predictions[i])
 
     with open("./predictions/" + str(model_idx) + ".pkl", "wb") as pf:
         pickle.dump(predictions, pf)
+
+
+def evaluate_model(lstm_model, Xi, Yi, init_val):
+    # The purpose of this function is to check how the model is doing on the training data
+    # This may be used by later steps for filtering bad models from the ensemble
+
+    y_train_pred = lstm_model.predict(Xi, batch_size=1)
+    lstm_model.reset_states()
+
+    y_pred_transform = np.cumsum(np.append([init_val], y_train_pred))
+    y_gt_transform = np.cumsum(np.append([init_val], Yi))
+
+    mse = mean_squared_error(y_gt_transform, y_pred_transform)
+
+    return mse
 
 
 def bootstrap_data(train_data, bootstrap_method, n_samples):
@@ -170,7 +195,7 @@ def bootstrap_data(train_data, bootstrap_method, n_samples):
         # Will find a way to fix this issue later on.
         bootstrapped_dataset = []
 
-        for gpf in glob.glob(GP_BOOTSTRAP_SAMPLES_PATH)[::-1]:
+        for gpf in glob.glob(GP_BOOTSTRAP_SAMPLES_PATH):
             with open(gpf, "rb") as gpfp:
                 bootstrapped_dataset.append(pickle.load(gpfp))
 
@@ -217,7 +242,16 @@ def prepare_data(dataset, fraction_train=.7, bootstrap_method=None, n_samples=No
         return train_dataset, test_dataset
     else:
         bootstrapped_train = bootstrap_data(train_dataset, bootstrap_method, n_samples)
+        # plot_differenced_data(bootstrapped_train)
         return train_dataset, test_dataset, bootstrapped_train
+
+
+def plot_differenced_data(bootstrapped_data):
+
+    for x, y in bootstrapped_data:
+        plt.plot(y)
+
+    plt.savefig("./figures/diff_" + DATASET_TITLE + ".png")
 
 
 def plot_data(train_data, test_data, lstm_mean, lstm_sd):
@@ -233,15 +267,15 @@ def plot_data(train_data, test_data, lstm_mean, lstm_sd):
     plt.fill_between(list(range(len(lstm_mean))),
                      lstm_mean - 2 * lstm_sd,
                      lstm_mean + 2 * lstm_sd,
-                     color="gray", alpha=0.2)
+                     color="#C0C0C0", alpha=0.2)
 
     plt.axvline(len(train_data), color="black", linestyle='--')
 
-    plt.title(DATASET_TITLE)
+    # plt.title(DATASET_TITLE)
     plt.xlabel(X_LABEL)
     plt.ylabel(Y_LABEL)
 
-    plt.savefig("./figures/" + DATASET_TITLE + ".png")
+    plt.savefig("./figures/" + DATASET_TITLE + ".eps", format="eps")
 
 
 def synthesize_predictions():
@@ -286,7 +320,7 @@ def main():
 
         print "Training ensemble..."
 
-        Parallel(n_jobs=N_JOBS)(delayed(train_model)(dat[0], dat[1], idx)
+        Parallel(n_jobs=N_JOBS)(delayed(train_model)(dat[0], dat[1], idx, train[0])
                                 for idx, dat in enumerate(bs_train))
 
         print "Done training ensemble!"
